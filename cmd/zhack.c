@@ -52,6 +52,7 @@
 #include <sys/dmu_tx.h>
 #include <zfeature_common.h>
 #include <libzutil.h>
+#include <libnvpair.h>
 
 static importargs_t g_importargs;
 static char *g_pool;
@@ -615,6 +616,447 @@ zhack_repair_label_cksum(int argc, char **argv)
 	return (1);
 }
 
+//stolen from libnvpair.c
+
+#define	NVP(elem, type, vtype, ptype, format) { \
+	vtype	value; \
+\
+	(void) nvpair_value_##type(elem, &value); \
+	(void) printf("%*s%s: " format "\n", indent, "", \
+	    nvpair_name(elem), (ptype)value); \
+}
+
+#define	NVPA(elem, type, vtype, ptype, format) { \
+	uint_t	i, count; \
+	vtype	*value;  \
+\
+	(void) nvpair_value_##type(elem, &value, &count); \
+	for (i = 0; i < count; i++) { \
+		(void) printf("%*s%s[%d]: " format "\n", indent, "", \
+		    nvpair_name(elem), i, (ptype)value[i]); \
+	} \
+}
+static void
+zhack_print_nvpair(nvpair_t *elem, int indent )
+{
+	boolean_t	bool_value;
+	switch (nvpair_type(elem)) {
+		case DATA_TYPE_BOOLEAN:
+			(void) printf("%*s%s\n", indent, "", nvpair_name(elem));
+			break;
+
+		case DATA_TYPE_BOOLEAN_VALUE:
+			(void) nvpair_value_boolean_value(elem, &bool_value);
+			(void) printf("%*s%s: %s\n", indent, "",
+			    nvpair_name(elem), bool_value ? "true" : "false");
+			break;
+
+		case DATA_TYPE_BYTE:
+			NVP(elem, byte, uchar_t, int, "%u");
+			break;
+
+		case DATA_TYPE_INT8:
+			NVP(elem, int8, int8_t, int, "%d");
+			break;
+
+		case DATA_TYPE_UINT8:
+			NVP(elem, uint8, uint8_t, int, "%u");
+			break;
+
+		case DATA_TYPE_INT16:
+			NVP(elem, int16, int16_t, int, "%d");
+			break;
+
+		case DATA_TYPE_UINT16:
+			NVP(elem, uint16, uint16_t, int, "%u");
+			break;
+
+		case DATA_TYPE_INT32:
+			NVP(elem, int32, int32_t, long, "%ld");
+			break;
+
+		case DATA_TYPE_UINT32:
+			NVP(elem, uint32, uint32_t, ulong_t, "%lu");
+			break;
+
+		case DATA_TYPE_INT64:
+			NVP(elem, int64, int64_t, longlong_t, "%lld");
+			break;
+
+		case DATA_TYPE_UINT64:
+			NVP(elem, uint64, uint64_t, u_longlong_t, "%llu");
+			break;
+
+		case DATA_TYPE_STRING:
+			NVP(elem, string, char *, char *, "'%s'");
+			break;
+
+		case DATA_TYPE_BYTE_ARRAY:
+			NVPA(elem, byte_array, uchar_t, int, "%u");
+			break;
+
+		case DATA_TYPE_INT8_ARRAY:
+			NVPA(elem, int8_array, int8_t, int, "%d");
+			break;
+
+		case DATA_TYPE_UINT8_ARRAY:
+			NVPA(elem, uint8_array, uint8_t, int, "%u");
+			break;
+
+		case DATA_TYPE_INT16_ARRAY:
+			NVPA(elem, int16_array, int16_t, int, "%d");
+			break;
+
+		case DATA_TYPE_UINT16_ARRAY:
+			NVPA(elem, uint16_array, uint16_t, int, "%u");
+			break;
+
+		case DATA_TYPE_INT32_ARRAY:
+			NVPA(elem, int32_array, int32_t, long, "%ld");
+			break;
+
+		case DATA_TYPE_UINT32_ARRAY:
+			NVPA(elem, uint32_array, uint32_t, ulong_t, "%lu");
+			break;
+
+		case DATA_TYPE_INT64_ARRAY:
+			NVPA(elem, int64_array, int64_t, longlong_t, "%lld");
+			break;
+
+		case DATA_TYPE_UINT64_ARRAY:
+			NVPA(elem, uint64_array, uint64_t, u_longlong_t,
+			    "%llu");
+			break;
+
+		case DATA_TYPE_STRING_ARRAY:
+			NVPA(elem, string_array, char *, char *, "'%s'");
+			break;
+/* we shold not handle this
+		case DATA_TYPE_NVLIST:
+			(void) nvpair_value_nvlist(elem, &nvlist_value);
+			(void) printf("%*s%s:\n", indent, "",
+			    nvpair_name(elem));
+			dump_nvlist(nvlist_value, indent + 4);
+			break;
+
+		case DATA_TYPE_NVLIST_ARRAY:
+			(void) nvpair_value_nvlist_array(elem,
+			    &nvlist_array_value, &count);
+			for (i = 0; i < count; i++) {
+				(void) printf("%*s%s[%u]:\n", indent, "",
+				    nvpair_name(elem), i);
+				dump_nvlist(nvlist_array_value[i], indent + 4);
+			}
+			break;
+*/
+		default:
+			(void) printf( "bad config type %d for %s\n", nvpair_type(elem), nvpair_name(elem));
+	}
+}
+
+static nvpair_t *
+zhack_search_nvlist(nvlist_t *list, int argc, char **argv,nvlist_t **container)
+{
+	nvpair_t *pair;
+	nvlist_t **array;
+	int err,num;
+	uint_t count;
+	//find
+	argc--;
+	//printf("nvlist argc=%d argv[0]=%s\n",argc,argv[0]);
+	if (nvlist_exists(list,argv[0])) {
+		// assume this works for now
+		pair = fnvlist_lookup_nvpair(list,argv[0]);
+		switch (nvpair_type(pair)) {
+			case DATA_TYPE_NVLIST:
+				//printf("nvlist\n");
+				return zhack_search_nvlist(fnvpair_value_nvlist(pair),argc,&argv[1],container);
+				break;
+			case DATA_TYPE_NVLIST_ARRAY:
+				//printf("nvlist array \n");
+				err = nvpair_value_nvlist_array(pair,&array,&count);
+				if (err==0) {
+					num = atoi(argv[1]);
+					argc--;
+					//printf("count: %d num: %d\n",count,num);
+					if (num<count)
+						return zhack_search_nvlist(array[num],argc,&argv[2],container);
+					else {
+						printf("array index too large\n");
+					}
+				}
+				else {
+					printf("Error looking up array: %d\n",err);
+					return NULL;
+				}
+				break;
+			default:
+				*container = list;
+				return pair;
+		}
+	}
+	return NULL;
+}
+
+static int
+zhack_show_label_value(int argc, char **argv)
+{
+
+	const char *cfg_keys[] = { ZPOOL_CONFIG_VERSION,
+	    ZPOOL_CONFIG_POOL_STATE, ZPOOL_CONFIG_GUID };
+	vdev_label_t labels[VDEV_LABELS] = {{{0}}};
+	struct stat st;
+	int fd;
+
+	abd_init();
+
+  //remove show argument
+	argc -= 1;
+	argv += 1;
+
+	if (argc < 1) {
+		(void) fprintf(stderr, "error: missing device\n");
+		usage();
+	}
+
+	//printf("%s\n",argv[argc-1]);
+	if ((fd = open(argv[argc-1], O_RDWR)) == -1)
+		fatal(NULL, FTAG, "cannot open '%s': %s", argv[0],
+		    strerror(errno));
+
+	if (stat(argv[argc-1], &st) != 0)
+		fatal(NULL, FTAG, "cannot stat '%s': %s", argv[0],
+		    strerror(errno));
+
+	for (int l = 0; l < VDEV_LABELS; l++) {
+		uint64_t label_offset;
+		nvlist_t *cfg,*nvlist;
+		nvpair_t *pair;
+		uint64_t val;
+		ssize_t err;
+
+		vdev_label_t *vl = &labels[l];
+
+		label_offset = vdev_label_offset(st.st_size, l, 0);
+		err = pread64(fd, vl, sizeof (vdev_label_t), label_offset);
+		if (err == -1) {
+			(void) fprintf(stderr, "error: cannot read "
+			    "label %d: %s\n", l, strerror(errno));
+			continue;
+		} else if (err != sizeof (vdev_label_t)) {
+			(void) fprintf(stderr, "error: bad label %d read size "
+			    "\n", l);
+			continue;
+		}
+
+		err = nvlist_unpack(vl->vl_vdev_phys.vp_nvlist,
+		    VDEV_PHYS_SIZE - sizeof (zio_eck_t), &cfg, 0);
+		if (err) {
+			(void) fprintf(stderr, "error: cannot unpack nvlist "
+			    "label %d\n", l);
+			continue;
+		}
+
+		for (int i = 0; i < ARRAY_SIZE(cfg_keys); i++) {
+			err = nvlist_lookup_uint64(cfg, cfg_keys[i], &val);
+			if (err) {
+				(void) fprintf(stderr, "error: label %d: "
+				    "cannot find nvlist key %s\n",
+				    l, cfg_keys[i]);
+				continue;
+			}
+		}
+
+		printf("Label: %d\n",l);
+		//printf("  %s\n",nvpair_name(pair));
+
+		pair = zhack_search_nvlist(cfg,argc-1,argv,&nvlist);
+		//printf("  %s = ",nvpair_name(pair));
+		if (pair != NULL ) {
+			zhack_print_nvpair(pair,2);
+		}
+		else
+			printf("Error looking up value\n");
+		//printf("\n");
+		//break;//only one label for now
+	}
+	close(fd);
+
+	abd_fini();
+
+	return (0);
+}
+
+static int
+zhack_set_label_value(int argc, char **argv)
+{
+	zio_checksum_info_t *ci = &zio_checksum_table[ZIO_CHECKSUM_LABEL];
+	const char *cfg_keys[] = { ZPOOL_CONFIG_VERSION,
+	    ZPOOL_CONFIG_POOL_STATE, ZPOOL_CONFIG_GUID };
+	vdev_label_t labels[VDEV_LABELS] = {{{0}}};
+	struct stat st;
+	int fd;
+
+	abd_init();
+
+  //remove show argument
+	argc -= 1;
+	argv += 1;
+
+	if (argc < 1) {
+		(void) fprintf(stderr, "error: missing device\n");
+		usage();
+	}
+
+	//printf("%s\n",argv[argc-1]);
+	if ((fd = open(argv[argc-1], O_RDWR)) == -1)
+		fatal(NULL, FTAG, "cannot open '%s': %s", argv[0],
+		    strerror(errno));
+
+	if (stat(argv[argc-1], &st) != 0)
+		fatal(NULL, FTAG, "cannot stat '%s': %s", argv[0],
+		    strerror(errno));
+
+	for (int l = 0; l < VDEV_LABELS; l++) {
+		uint64_t label_offset, offset;
+		zio_cksum_t expected_cksum;
+		zio_cksum_t actual_cksum;
+		zio_cksum_t verifier;
+		zio_eck_t *eck;
+		nvlist_t *cfg;
+		nvlist_t *nvlist;
+		nvpair_t *pair;
+		int byteswap;
+		uint64_t val;
+		ssize_t err;
+		size_t size;
+		char buf[4096];  // ack..  is this big enough
+		char *cptr;
+
+		vdev_label_t *vl = &labels[l];
+
+		label_offset = vdev_label_offset(st.st_size, l, 0);
+		err = pread64(fd, vl, sizeof (vdev_label_t), label_offset);
+		if (err == -1) {
+			(void) fprintf(stderr, "error: cannot read "
+			    "label %d: %s\n", l, strerror(errno));
+			continue;
+		} else if (err != sizeof (vdev_label_t)) {
+			(void) fprintf(stderr, "error: bad label %d read size "
+			    "\n", l);
+			continue;
+		}
+
+		err = nvlist_unpack(vl->vl_vdev_phys.vp_nvlist,
+		    VDEV_PHYS_SIZE - sizeof (zio_eck_t), &cfg, 0);
+		if (err) {
+			(void) fprintf(stderr, "error: cannot unpack nvlist "
+			    "label %d\n", l);
+			continue;
+		}
+
+		for (int i = 0; i < ARRAY_SIZE(cfg_keys); i++) {
+			err = nvlist_lookup_uint64(cfg, cfg_keys[i], &val);
+			if (err) {
+				(void) fprintf(stderr, "error: label %d: "
+				    "cannot find nvlist key %s\n",
+				    l, cfg_keys[i]);
+				continue;
+			}
+		}
+
+		printf("\n\nLabel: %d\n",l);
+		//printf("  %s\n",nvpair_name(pair));
+
+		pair = zhack_search_nvlist(cfg,argc-1,argv,&nvlist);
+		//printf("  %s = ",nvpair_name(pair));
+		if (pair != NULL ) {
+			zhack_print_nvpair(pair,2);
+			strcpy(buf,nvpair_name(pair));
+			//rip it out
+			nvlist_remove_nvpair(nvlist,pair);
+			switch (nvpair_type(pair)) {
+				case DATA_TYPE_UINT64:
+					printf("Uint64\n");
+					val = strtoul(argv[argc-2],NULL,10);
+					//printf("Val: %zu name: %s\n",val,nvpair_name(pair));
+					//fnvlist_add_uint64(nvlist,nvpair_name(pair),val);
+					fnvlist_add_uint64(nvlist,buf,val);
+					break;
+				case DATA_TYPE_STRING:
+					printf("String\n");
+					fnvlist_add_string(nvlist,buf,argv[argc-2]);
+					break;
+				default:
+					printf("Unsupported type given");
+					return -1;
+			}
+			//buf=NULL; //vl->vl_vdev_phys.vp_nvlist
+			// is the cast safe here
+			cptr = vl->vl_vdev_phys.vp_nvlist;
+			size = sizeof (vl->vl_vdev_phys.vp_nvlist);
+			//err = nvlist_pack(cfg, (char **)&buf, &size, NV_ENCODE_NATIVE, KM_SLEEP);
+			err = nvlist_pack(cfg, &cptr, &size, NV_ENCODE_NATIVE, KM_SLEEP);
+			if (err == 0) {
+				printf("Sizes %zu %zu\n",size,sizeof(vl->vl_vdev_phys.vp_nvlist));
+				//vl->vl_vdev_phys.vp_nvlist = buf;
+			}
+			else {
+				printf("Error code: %ld\n",err);
+				return -1;
+			}
+		}
+		else {
+			printf("Error looking up value\n");
+			return -1;
+		}
+		//printf("\n");
+
+		void *data = (char *)vl + offsetof(vdev_label_t, vl_vdev_phys);
+		eck = (zio_eck_t *)((char *)(data) + VDEV_PHYS_SIZE) - 1;
+
+		offset = label_offset + offsetof(vdev_label_t, vl_vdev_phys);
+		ZIO_SET_CHECKSUM(&verifier, offset, 0, 0, 0);
+
+		byteswap = (eck->zec_magic == BSWAP_64(ZEC_MAGIC));
+		if (byteswap)
+			byteswap_uint64_array(&verifier, sizeof (zio_cksum_t));
+
+		expected_cksum = eck->zec_cksum;
+		eck->zec_cksum = verifier;
+
+		abd_t *abd = abd_get_from_buf(data, VDEV_PHYS_SIZE);
+		ci->ci_func[byteswap](abd, VDEV_PHYS_SIZE, NULL, &actual_cksum);
+		abd_free(abd);
+
+		if (byteswap)
+			byteswap_uint64_array(&expected_cksum,
+			    sizeof (zio_cksum_t));
+
+		if (ZIO_CHECKSUM_EQUAL(actual_cksum, expected_cksum))
+			continue;
+
+		eck->zec_cksum = actual_cksum;
+
+		err = pwrite64(fd, data, VDEV_PHYS_SIZE, offset);
+		if (err == -1) {
+			(void) fprintf(stderr, "error: cannot write "
+			    "label %d: %s\n", l, strerror(errno));
+			continue;
+		} else if (err != VDEV_PHYS_SIZE) {
+			(void) fprintf(stderr, "error: bad write size "
+			    "label %d\n", l);
+			continue;
+		}
+	}
+	close(fd);
+
+	abd_fini();
+
+	return (0);
+}
+
+
 static int
 zhack_do_label(int argc, char **argv)
 {
@@ -632,7 +1074,14 @@ zhack_do_label(int argc, char **argv)
 	subcommand = argv[0];
 	if (strcmp(subcommand, "repair") == 0) {
 		err = zhack_repair_label_cksum(argc, argv);
-	} else {
+	}
+	else if (strcmp(subcommand, "show") == 0) {
+		err = zhack_show_label_value(argc, argv);
+	}
+	else if (strcmp(subcommand, "set") == 0) {
+		err = zhack_set_label_value(argc, argv);
+	}
+	else {
 		(void) fprintf(stderr, "error: unknown subcommand: %s\n",
 		    subcommand);
 		usage();
