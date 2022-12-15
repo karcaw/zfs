@@ -731,7 +731,7 @@ zhack_print_nvpair(nvpair_t *elem, int indent )
 		case DATA_TYPE_STRING_ARRAY:
 			NVPA(elem, string_array, char *, char *, "'%s'");
 			break;
-/* we shold not handle this
+/* we do not handle these
 		case DATA_TYPE_NVLIST:
 			(void) nvpair_value_nvlist(elem, &nvlist_value);
 			(void) printf("%*s%s:\n", indent, "",
@@ -761,28 +761,25 @@ zhack_search_nvlist(nvlist_t *list, int argc, char **argv,nvlist_t **container)
 	nvlist_t **array;
 	int err,num;
 	uint_t count;
-	//find
+
 	argc--;
-	//printf("nvlist argc=%d argv[0]=%s\n",argc,argv[0]);
+
 	if (nvlist_exists(list,argv[0])) {
-		// assume this works for now
 		pair = fnvlist_lookup_nvpair(list,argv[0]);
 		switch (nvpair_type(pair)) {
 			case DATA_TYPE_NVLIST:
-				//printf("nvlist\n");
 				return zhack_search_nvlist(fnvpair_value_nvlist(pair),argc,&argv[1],container);
 				break;
+
 			case DATA_TYPE_NVLIST_ARRAY:
-				//printf("nvlist array \n");
 				err = nvpair_value_nvlist_array(pair,&array,&count);
 				if (err==0) {
 					num = atoi(argv[1]);
 					argc--;
-					//printf("count: %d num: %d\n",count,num);
-					if (num<count)
+					if ( num<count || num<0 )
 						return zhack_search_nvlist(array[num],argc,&argv[2],container);
 					else {
-						printf("array index too large\n");
+						printf("array index Incorrect %d not in 0-%d\n",num,count);
 					}
 				}
 				else {
@@ -790,6 +787,7 @@ zhack_search_nvlist(nvlist_t *list, int argc, char **argv,nvlist_t **container)
 					return NULL;
 				}
 				break;
+
 			default:
 				*container = list;
 				return pair;
@@ -819,7 +817,6 @@ zhack_show_label_value(int argc, char **argv)
 		usage();
 	}
 
-	//printf("%s\n",argv[argc-1]);
 	if ((fd = open(argv[argc-1], O_RDWR)) == -1)
 		fatal(NULL, FTAG, "cannot open '%s': %s", argv[0],
 		    strerror(errno));
@@ -868,17 +865,13 @@ zhack_show_label_value(int argc, char **argv)
 		}
 
 		printf("Label: %d\n",l);
-		//printf("  %s\n",nvpair_name(pair));
 
 		pair = zhack_search_nvlist(cfg,argc-1,argv,&nvlist);
-		//printf("  %s = ",nvpair_name(pair));
 		if (pair != NULL ) {
 			zhack_print_nvpair(pair,2);
 		}
 		else
-			printf("Error looking up value\n");
-		//printf("\n");
-		//break;//only one label for now
+			printf("Error looking up specified value\n");
 	}
 	close(fd);
 
@@ -908,7 +901,6 @@ zhack_set_label_value(int argc, char **argv)
 		usage();
 	}
 
-	//printf("%s\n",argv[argc-1]);
 	if ((fd = open(argv[argc-1], O_RDWR)) == -1)
 		fatal(NULL, FTAG, "cannot open '%s': %s", argv[0],
 		    strerror(errno));
@@ -930,7 +922,7 @@ zhack_set_label_value(int argc, char **argv)
 		uint64_t val;
 		ssize_t err;
 		size_t size;
-		char buf[4096];  // ack..  is this big enough
+		char buf[4096];
 		char *cptr;
 
 		vdev_label_t *vl = &labels[l];
@@ -965,41 +957,34 @@ zhack_set_label_value(int argc, char **argv)
 			}
 		}
 
-		printf("\n\nLabel: %d\n",l);
-		//printf("  %s\n",nvpair_name(pair));
+		printf("\nLabel: %d\n",l);
 
 		pair = zhack_search_nvlist(cfg,argc-1,argv,&nvlist);
-		//printf("  %s = ",nvpair_name(pair));
 		if (pair != NULL ) {
 			zhack_print_nvpair(pair,2);
 			strcpy(buf,nvpair_name(pair));
-			//rip it out
+			//remove old value
 			nvlist_remove_nvpair(nvlist,pair);
 			switch (nvpair_type(pair)) {
 				case DATA_TYPE_UINT64:
-					printf("Uint64\n");
 					val = strtoul(argv[argc-2],NULL,10);
-					//printf("Val: %zu name: %s\n",val,nvpair_name(pair));
-					//fnvlist_add_uint64(nvlist,nvpair_name(pair),val);
 					fnvlist_add_uint64(nvlist,buf,val);
 					break;
+
 				case DATA_TYPE_STRING:
-					printf("String\n");
 					fnvlist_add_string(nvlist,buf,argv[argc-2]);
 					break;
+
 				default:
 					printf("Unsupported type given");
 					return -1;
 			}
-			//buf=NULL; //vl->vl_vdev_phys.vp_nvlist
-			// is the cast safe here
+
 			cptr = vl->vl_vdev_phys.vp_nvlist;
 			size = sizeof (vl->vl_vdev_phys.vp_nvlist);
-			//err = nvlist_pack(cfg, (char **)&buf, &size, NV_ENCODE_NATIVE, KM_SLEEP);
 			err = nvlist_pack(cfg, &cptr, &size, NV_ENCODE_NATIVE, KM_SLEEP);
 			if (err == 0) {
 				printf("Sizes %zu %zu\n",size,sizeof(vl->vl_vdev_phys.vp_nvlist));
-				//vl->vl_vdev_phys.vp_nvlist = buf;
 			}
 			else {
 				printf("Error code: %ld\n",err);
@@ -1010,8 +995,8 @@ zhack_set_label_value(int argc, char **argv)
 			printf("Error looking up value\n");
 			return -1;
 		}
-		//printf("\n");
 
+		// Do the checkum now, this is a direct copy of the checksum function above.
 		void *data = (char *)vl + offsetof(vdev_label_t, vl_vdev_phys);
 		eck = (zio_eck_t *)((char *)(data) + VDEV_PHYS_SIZE) - 1;
 
